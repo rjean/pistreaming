@@ -4,6 +4,7 @@ import sys
 import io
 import os
 import shutil
+import argparse
 from subprocess import Popen, PIPE
 from string import Template
 from struct import Struct
@@ -55,7 +56,7 @@ class StreamingHttpHandler(BaseHTTPRequestHandler):
             content_type = 'text/html; charset=utf-8'
             tpl = Template(self.server.index_template)
             content = tpl.safe_substitute(dict(
-                WS_PORT=WS_PORT, WIDTH=WIDTH, HEIGHT=HEIGHT, COLOR=COLOR,
+                WS_PORT=WS_PORT, WIDTH=args.width, HEIGHT=args.height, COLOR=COLOR,
                 BGCOLOR=BGCOLOR))
         else:
             self.send_error(404, 'File not found')
@@ -82,11 +83,11 @@ class StreamingHttpServer(HTTPServer):
 
 class StreamingWebSocket(WebSocket):
     def opened(self):
-        self.send(JSMPEG_HEADER.pack(JSMPEG_MAGIC, WIDTH, HEIGHT), binary=True)
+        self.send(JSMPEG_HEADER.pack(JSMPEG_MAGIC, args.width, args.height), binary=True)
 
 
 class BroadcastOutput(object):
-    def __init__(self, camera):
+    def __init__(self, camera, bitrate):
         print('Spawning background conversion process')
         self.converter = Popen([
             'ffmpeg',
@@ -96,7 +97,7 @@ class BroadcastOutput(object):
             '-r', str(float(camera.framerate)),
             '-i', '-',
             '-f', 'mpeg1video',
-            '-b', '800k',
+            '-b', str(bitrate)+'k',
             '-r', str(float(camera.framerate)),
             '-'],
             stdin=PIPE, stdout=PIPE, stderr=io.open(os.devnull, 'wb'),
@@ -128,11 +129,20 @@ class BroadcastThread(Thread):
         finally:
             self.converter.stdout.close()
 
+parser = argparse.ArgumentParser(description='Low-latency video streaming for RaspberryPi')
+parser.add_argument("--width", default=WIDTH, type=int)
+parser.add_argument("--height", default=HEIGHT, type=int)
+parser.add_argument("--bitrate", default=800, type=int, help="Target bitrate, in kbps")
+
+args = parser.parse_args()
 
 def main():
     print('Initializing camera')
+
+    
+    
     with picamera.PiCamera() as camera:
-        camera.resolution = (WIDTH, HEIGHT)
+        camera.resolution = (args.width, args.height)
         camera.framerate = FRAMERATE
         camera.vflip = VFLIP # flips image rightside up, as needed
         camera.hflip = HFLIP # flips image left-right, as needed
@@ -150,7 +160,7 @@ def main():
         http_server = StreamingHttpServer()
         http_thread = Thread(target=http_server.serve_forever)
         print('Initializing broadcast thread')
-        output = BroadcastOutput(camera)
+        output = BroadcastOutput(camera, bitrate=args.bitrate)
         broadcast_thread = BroadcastThread(output.converter, websocket_server)
         print('Starting recording')
         camera.start_recording(output, 'yuv')
